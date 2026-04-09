@@ -1,4 +1,4 @@
-name: Org-Wide Daily Status
+name: Send Work Log
 
 on:
   workflow_dispatch:
