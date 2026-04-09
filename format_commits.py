@@ -52,7 +52,7 @@ def format_and_send():
 
     # formatting logic
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-3-flash-preview')
     
     prompt = f"""
     You are a professional assistant. Summarize these technical GitHub commits into 
