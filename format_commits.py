@@ -3,68 +3,79 @@ import requests
 import google.generativeai as genai
 from datetime import datetime, timedelta
 
-# Configuration
 GITHUB_TOKEN = os.getenv("GH_PATH")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
-# List targets here
 TARGETS = ["envobyte", "Envobyte-LTD"] 
-USERNAME = "tawhidmonowar" # GitHub handle
+USERNAME = "tawhidmonowar"
 
-def get_commits():
+def get_recent_commits():
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
-    # Look back 24 hours
-    since = (datetime.utcnow() - timedelta(days=1)).isoformat() + "Z"
-    all_messages = []
+    
+    url = f"https://api.github.com/users/{USERNAME}/events"
+    response = requests.get(url, headers=headers)
+    events = response.json()
 
-    for target in TARGETS:
-        user_resp = requests.get(f"https://api.github.com/users/{target}", headers=headers).json()
-        type_key = "orgs" if user_resp.get("type") == "Organization" else "users"
-        
-        repos_url = f"https://api.github.com/{type_key}/{target}/repos?type=private&per_page=100"
-        repos = requests.get(repos_url, headers=headers).json()
+    if not isinstance(events, list):
+        print(f"Error fetching events: {events}")
+        return ""
 
-        if not isinstance(repos, list):
-            print(f"Could not access repos for {target}: {repos}")
+    since_time = datetime.utcnow() - timedelta(days=1)
+    relevant_commits = []
+    seen_shas = set() 
+
+    for event in events:
+        # 1. Filter by Time (Last 24 hours)
+        event_date = datetime.strptime(event['created_at'], '%Y-%m-%dT%H:%M:%SZ')
+        if event_date < since_time:
             continue
 
-        for repo in repos:
-            repo_name = repo['name']
-            commits_url = f"https://api.github.com/repos/{target}/{repo_name}/commits?author={USERNAME}&since={since}"
-            commits = requests.get(commits_url, headers=headers).json()
-            
-            if isinstance(commits, list) and len(commits) > 0:
-                for c in commits:
-                    msg = c['commit']['message'].split('\n')[0]
-                    all_messages.append(f"[{repo_name}] {msg}")
-                
-    return "\n".join(all_messages)
+        if event['type'] == 'PushEvent':
+            repo_name = event['repo']['name']
+            owner = repo_name.split('/')[0]
+
+            if owner.lower() in [t.lower() for t in TARGETS]:
+                commits = event['payload'].get('commits', [])
+                for commit in commits:
+                    sha = commit['sha']
+                    if sha not in seen_shas:
+                        msg = f"[{repo_name}] {commit['message'].splitlines()[0]}"
+                        relevant_commits.append(msg)
+                        seen_shas.add(sha)
+
+    return "\n".join(relevant_commits)
 
 def format_and_send():
-    raw_commits = get_commits()
-    if not raw_commits:
-        print("No activity found in the last 24 hours.")
+    commit_history = get_recent_commits()
+    
+    if not commit_history:
+        print("No activity detected in the target profiles/orgs today.")
         return
 
-    # formatting logic
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-3-flash-preview')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
-    You are a professional assistant. Summarize these technical GitHub commits into 
-    a clean, bulleted daily work status for a Slack channel. 
-    Group by project and focus on achievements.
+    Act as a professional software engineer. Summarize my daily work based on these commits.
+    - Group by repository.
+    - Use bullet points.
+    - Make it readable for a Slack stand-up channel.
     
     Commits:
-    {raw_commits}
+    {commit_history}
     """
     
-    response = model.generate_content(prompt)
-    requests.post(SLACK_WEBHOOK_URL, json={"text": response.text})
+    try:
+        response = model.generate_content(prompt)
+        slack_data = {"text": f"*Daily Work Status*\n\n{response.text}"}
+        requests.post(SLACK_WEBHOOK_URL, json=slack_data)
+        print("Status sent to Slack successfully!")
+    except Exception as e:
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     format_and_send()
