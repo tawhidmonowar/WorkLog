@@ -57,7 +57,7 @@ def format_and_send():
         return
 
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-3-flash-preview')
     
     prompt = f"""
     Act as a professional software engineer. Summarize my daily work based on these commits.
