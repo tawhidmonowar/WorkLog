@@ -4,7 +4,7 @@ import google.generativeai as genai
 from datetime import datetime, timedelta
 
 # Configuration
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_TOKEN = os.getenv("GH_PATH")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
