@@ -12,48 +12,42 @@ USERNAME = "tawhidmonowar"
 
 def get_recent_commits():
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.cloak-preview"
     }
 
-    since_time = (datetime.utcnow() - timedelta(days=1)).isoformat() + "Z"
+    since_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    query = f"author:{USERNAME} committer-date:>={since_date}"
+
+    url = "https://api.github.com/search/commits"
+    params = {
+        "q": query,
+        "sort": "committer-date",
+        "order": "desc",
+        "per_page": 100
+    }
+
+    response = requests.get(url, headers=headers, params=params)
+    data = response.json()
+
+    if "items" not in data:
+        print(f"Error: {data}")
+        return ""
+
     relevant_commits = []
-    seen_shas = set()
+    seen = set()
 
-    repos = []
-
-    for target in TARGETS:
-        url = f"https://api.github.com/users/{target}/repos"
-        response = requests.get(url, headers=headers)
-        data = response.json()
-
-        if isinstance(data, list):
-            repos.extend([repo["full_name"] for repo in data])
-
-    for repo in repos:
-        commits_url = f"https://api.github.com/repos/{repo}/commits"
-        params = {
-            "author": USERNAME,
-            "since": since_time
-        }
-
-        response = requests.get(commits_url, headers=headers, params=params)
-        commits = response.json()
-
-        if not isinstance(commits, list):
+    for item in data["items"]:
+        sha = item["sha"]
+        if sha in seen:
             continue
 
-        for commit in commits:
-            sha = commit["sha"]
+        repo_name = item["repository"]["full_name"]
+        message = item["commit"]["message"].splitlines()[0]
 
-            if sha in seen_shas:
-                continue
-
-            message = commit["commit"]["message"].splitlines()[0]
-            repo_name = repo
-
-            relevant_commits.append(f"[{repo_name}] {message}")
-            seen_shas.add(sha)
+        relevant_commits.append(f"[{repo_name}] {message}")
+        seen.add(sha)
 
     return "\n".join(relevant_commits)
 
