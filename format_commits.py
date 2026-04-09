@@ -1,6 +1,6 @@
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from google import genai
@@ -10,11 +10,24 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
 USERNAME = os.getenv("GH_USERNAME")
-TARGETS = [t.strip() for t in os.getenv("GH_TARGETS", "").split(",") if t.strip()] 
+TARGETS = [t.strip() for t in os.getenv("GH_TARGETS", "").split(",") if t.strip()]
+
+def get_since_time():
+    bd_timezone = timezone(timedelta(hours=6))
+
+    now_bd = datetime.now(bd_timezone)
+    start_bd = now_bd.replace(hour=8, minute=0, second=0, microsecond=0)
+
+    if now_bd < start_bd:
+        start_bd = start_bd - timedelta(days=1)
+
+    start_utc = start_bd.astimezone(timezone.utc)
+    return start_utc.isoformat().replace("+00:00", "Z")
 
 def is_target_repo(repo_full_name):
     owner = repo_full_name.split("/")[0].lower()
     return owner in [t.lower() for t in TARGETS]
+
 
 def is_valid_commit(message):
     msg = message.lower()
@@ -23,17 +36,16 @@ def is_valid_commit(message):
         msg.startswith("revert")
     )
 
-def fetch_commits_page(page):
+def fetch_commits_page(page, since_time):
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.cloak-preview"
     }
 
-    since_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    query = f"author:{USERNAME} committer-date:>={since_date}"
+    query = f"author:{USERNAME} committer-date:>={since_time}"
 
     url = "https://api.github.com/search/commits"
+
     params = {
         "q": query,
         "sort": "committer-date",
@@ -51,13 +63,18 @@ def fetch_commits_page(page):
     return data["items"]
 
 def get_recent_commits():
+    since_time = get_since_time()
+
     seen = set()
     grouped = defaultdict(list)
 
     pages = [1, 2, 3]
 
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(fetch_commits_page, p) for p in pages]
+        futures = [
+            executor.submit(fetch_commits_page, p, since_time)
+            for p in pages
+        ]
 
         for future in as_completed(futures):
             items = future.result()
@@ -69,6 +86,7 @@ def get_recent_commits():
                     continue
 
                 sha = item["sha"]
+
                 if sha in seen:
                     continue
 
@@ -87,42 +105,43 @@ def format_commits(grouped):
         return ""
 
     formatted = ""
+
     for repo, messages in grouped.items():
         formatted += f"\n[{repo}]\n"
-        for m in messages:
-            formatted += f"- {m}\n"
+        for msg in messages:
+            formatted += f"- {msg}\n"
 
     return formatted
 
 def send_to_slack(formatted_text):
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
-    prompt = f"""
-Act as a senior software engineer writing a daily stand-up update.
+        prompt = f"""
+            Act as a senior software engineer writing a daily stand-up update.
+            
+            Rules:
+            - Group by repository
+            - Use bullet points
+            - Keep it concise
+            - Focus on meaningful work
+            
+            Commits:
+            {formatted_text}
+        """
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
 
-Rules:
-- Group by repository
-- Use bullet points
-- Dont use emoji
-- Keep it concise but professional
-- Focus on meaningful work (ignore trivial commits)
+        message = response.text.strip()
 
-Commits:
-{formatted_text}
-"""
+    except Exception as e:
+        print(f"Gemini failed: {e}")
+        message = f"*Daily Work Status*\n\n{formatted_text}"
 
-    response = client.models.generate_content(
-        model="gemini-3-flash-preview",
-        contents=prompt
-    )
+    requests.post(SLACK_WEBHOOK_URL, json={"text": message})
 
-    message = response.text.strip()
-
-    slack_data = {
-        "text": f"*Daily Work Status*\n\n{message}"
-    }
-
-    requests.post(SLACK_WEBHOOK_URL, json=slack_data)
 
 def main():
     grouped = get_recent_commits()
@@ -132,9 +151,12 @@ def main():
         return
 
     formatted = format_commits(grouped)
+
     send_to_slack(formatted)
 
-    print("Standup sent to Slack!")
+    print("Stand-up sent successfully.")
+
 
 if __name__ == "__main__":
     main()
+
