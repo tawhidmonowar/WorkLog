@@ -14,14 +14,15 @@ TARGETS = [t.strip() for t in os.getenv("GH_TARGETS", "").split(",") if t.strip(
 
 def get_since_time():
     bd_timezone = timezone(timedelta(hours=6))
-
     now_bd = datetime.now(bd_timezone)
+
     start_bd = now_bd.replace(hour=8, minute=0, second=0, microsecond=0)
 
     if now_bd < start_bd:
-        start_bd = start_bd - timedelta(days=1)
+        start_bd -= timedelta(days=1)
 
     start_utc = start_bd.astimezone(timezone.utc)
+
     return start_utc.isoformat().replace("+00:00", "Z")
 
 def is_target_repo(repo_full_name):
@@ -62,13 +63,56 @@ def fetch_commits_page(page, since_time):
 
     return data["items"]
 
+def fetch_events_commits():
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    url = f"https://api.github.com/users/{USERNAME}/events"
+    response = requests.get(url, headers=headers)
+    events = response.json()
+
+    if not isinstance(events, list):
+        return []
+
+    since_time = get_since_time()
+    since_dt = datetime.fromisoformat(since_time.replace("Z", "+00:00"))
+
+    commits = []
+
+    for event in events:
+        if event["type"] != "PushEvent":
+            continue
+
+        event_time = datetime.strptime(
+            event["created_at"], "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=timezone.utc)
+
+        if event_time < since_dt:
+            continue
+
+        repo = event["repo"]["name"]
+
+        if not is_target_repo(repo):
+            continue
+
+        for c in event["payload"].get("commits", []):
+            commits.append({
+                "sha": c["sha"],
+                "repo": repo,
+                "message": c["message"]
+            })
+
+    return commits
+
 def get_recent_commits():
     since_time = get_since_time()
 
     seen = set()
     grouped = defaultdict(list)
 
-    pages = [1, 2, 3]
+    pages = [1, 2]
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
@@ -97,6 +141,20 @@ def get_recent_commits():
 
                 grouped[repo].append(message)
                 seen.add(sha)
+
+    events_commits = fetch_events_commits()
+
+    for c in events_commits:
+        if c["sha"] in seen:
+            continue
+
+        message = c["message"].splitlines()[0]
+
+        if not is_valid_commit(message):
+            continue
+
+        grouped[c["repo"]].append(message)
+        seen.add(c["sha"])
 
     return grouped
 
@@ -128,7 +186,7 @@ def send_to_slack(formatted_text):
             
             Commits:
             {formatted_text}
-        """
+            """
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt
@@ -138,10 +196,10 @@ def send_to_slack(formatted_text):
 
     except Exception as e:
         print(f"Gemini failed: {e}")
+
+        # Fallback if AI fails
         message = f"*Daily Work Status*\n\n{formatted_text}"
-
     requests.post(SLACK_WEBHOOK_URL, json={"text": message})
-
 
 def main():
     grouped = get_recent_commits()
